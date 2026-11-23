@@ -32,7 +32,7 @@ jobs:
           cache: pip
 
       - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg libegl1 libgl1 libgles2 libfontconfig1 libfreetype6
 
       - name: Cache AI models (depth + voice)
         uses: actions/cache@v4
