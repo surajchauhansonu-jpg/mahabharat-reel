@@ -32,6 +32,8 @@ import requests
 import animate
 import audiofx
 import rig
+import vp_cast
+import vp_world
 from PIL import Image, ImageDraw, ImageFilter
 
 W, H, FPS = 720, 1280, 30
@@ -50,6 +52,7 @@ HF_MODEL_URL = os.getenv("HF_MODEL_URL", "https://router.huggingface.co/hf-infer
 VOICE = os.getenv("TTS_VOICE", "hi-IN-MadhurNeural")
 TTS_RATE = os.getenv("TTS_RATE", "-6%")
 TTS_PITCH = os.getenv("TTS_PITCH", "-3Hz")  # thodi bhari, dramatic awaaz
+MODE = os.getenv("MODE", "vector")   # vector = code-drawn puppets (default) | images = AI images
 CACHE = Path("models_cache")
 CHAR_DIR = Path("characters")
 POS = {"left": (0.30, 0.93), "center": (0.50, 0.93), "right": (0.70, 0.93)}
@@ -487,29 +490,34 @@ def make_particles(path, seconds=20, n=90):
     p.wait()
 
 
-def assemble(clips, total, out, scene_starts, cut_times, energies=None):
+def assemble(clips, total, out, scene_starts, cut_times, energies=None, overlay=True):
     lst = WORK / "clips.txt"
     lst.write_text("".join(f"file '{c.resolve()}'\n" for c in clips))
     joined = WORK / "joined.mp4"
     run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(joined)])
 
-    particles = WORK / "particles.mp4"
-    make_particles(particles)
     bed, sfx = audiofx.build_audio_assets(total, scene_starts, cut_times, WORK, energies=energies)
-
-    fv = ("[0:v]format=gbrp[a];[1:v]format=gbrp[b];"
-          "[a][b]blend=all_mode=screen:all_opacity=0.55,format=yuv420p,vignette=PI/6,"
-          f"eq=contrast=1.05:saturation=1.08,fade=t=in:st=0:d=0.4,fade=t=out:st={total - 0.8:.2f}:d=0.8[v];")
+    if overlay:
+        particles = WORK / "particles.mp4"
+        make_particles(particles)
+        inputs = ["-i", str(joined), "-stream_loop", "-1", "-i", str(particles), "-i", str(bed), "-i", str(sfx)]
+        bi, si = 2, 3
+        fv = ("[0:v]format=gbrp[a];[1:v]format=gbrp[b];"
+              "[a][b]blend=all_mode=screen:all_opacity=0.55,format=yuv420p,vignette=PI/6,"
+              f"eq=contrast=1.05:saturation=1.08,fade=t=in:st=0:d=0.4,fade=t=out:st={total - 0.8:.2f}:d=0.8[v];")
+    else:
+        inputs = ["-i", str(joined), "-i", str(bed), "-i", str(sfx)]
+        bi, si = 1, 2
+        fv = f"[0:v]fade=t=in:st=0:d=0.3,fade=t=out:st={total - 0.8:.2f}:d=0.8[v];"
     fa = ("[0:a]highpass=f=75,equalizer=f=110:t=q:w=1:g=3.5,equalizer=f=260:t=q:w=1:g=-2,"
           "equalizer=f=3200:t=q:w=1:g=3,equalizer=f=7500:t=q:w=1.5:g=1.5,"
           "acompressor=threshold=0.08:ratio=4:attack=4:release=100:makeup=3,"
           "aecho=0.8:0.88:70|140|230:0.22|0.14|0.08,asplit=2[vo][sc];"
-          "[2:a]volume=1.05[bed];[bed][sc]sidechaincompress=threshold=0.03:ratio=4:attack=12:release=300[duck];"
-          "[3:a]volume=0.9[fx];"
+          f"[{bi}:a]volume=1.05[bed];[bed][sc]sidechaincompress=threshold=0.03:ratio=4:attack=12:release=300[duck];"
+          f"[{si}:a]volume=0.9[fx];"
           "[vo][duck][fx]amix=inputs=3:duration=first:normalize=0,alimiter=limit=0.95,"
           f"loudnorm=I=-14:TP=-1.5:LRA=9,afade=t=out:st={total - 1.0:.2f}:d=1.0[a]")
-    run(["ffmpeg", "-y", "-i", str(joined), "-stream_loop", "-1", "-i", str(particles),
-         "-i", str(bed), "-i", str(sfx),
+    run(["ffmpeg", "-y", *inputs,
          "-filter_complex", fv + fa, "-map", "[v]", "-map", "[a]", "-t", f"{total:.2f}",
          "-c:v", "libx264", "-preset", "medium", "-crf", "23", "-c:a", "aac", "-b:a", "160k",
          "-movflags", "+faststart", str(out)])
@@ -542,6 +550,97 @@ def send_telegram(video, meta):
 
 
 # --------------------------------------------------------------------------- main
+def write_script_vector(topic, n, names):
+    prompt = (
+        "You are a scriptwriter for viral Hindi short-form animated storytelling videos on Indian mythology "
+        "(Mahabharat, Ramayan, Puranas). The video is drawn as flat-vector puppet theatre, so you must direct each "
+        "scene using ONLY the allowed options below.\n"
+        f"Topic: {topic}\n"
+        f"Write exactly {n} scenes. Rules:\n"
+        "- narration: simple conversational Hindi in Devanagari, 1-2 short sentences (max 14 words), dramatic storytelling "
+        "tone, spoken by a narrator. Scene 1 = strong hook (question or shocking secret). Last scene = cliffhanger / 'Part 2'.\n"
+        "- Stay with well-known accounts from the texts, do not invent facts, respectful tone, nothing offensive to any "
+        "religion, caste or community.\n"
+        f"- actors[].who must be one of: {', '.join(names)}. Max 2 actors per scene (3 only for a group moment). "
+        "Use the character the narration is about. Gods (Krishna, Brahma, Surya) may use action 'float'.\n"
+        "- actors[].at: far_left|left|center|right|far_right. actors[].face: left|right (face toward the other actor). "
+        "actors[].action: talk|listen|idle|namaste|bow|pray|point|raise|angry|sad|shock|walk|fight|float|laugh. "
+        "Use 'talk' only when that character is speaking quoted dialogue, otherwise idle/point/angry/sad/shock etc. "
+        "actors[].prop (optional): bow|mace|sword|staff|flute|dice|spear (the prop appears in the right hand).\n"
+        "- speaker: index (0/1/2) of the actor who is speaking or is the focus of the scene.\n"
+        "- backdrop: sunrise_field|night_sky|palace_hall|battlefield|forest|temple|cosmic|sky_clouds|fire|river. "
+        "palette: sunrise|day|dusk|night|war|mystic|forest|palace (match the mood). halo: true for divine/dramatic moments "
+        "(a glowing golden mandala behind the characters). particles: dust|embers|petals|stars|none.\n"
+        "- energy: 1 calm, 2 tense, 3 action/shock. Vary backdrops, camera and actions between scenes.\n"
+        'Return ONLY JSON: {"title":"(Hindi)","description":"(Hindi, 2 lines)","hashtags":["#..."],"scenes":['
+        '{"narration":"...","backdrop":"palace_hall","palette":"palace","halo":false,"particles":"dust","energy":2,'
+        '"speaker":0,"actors":[{"who":"Karna","at":"left","face":"right","action":"idle","prop":"none"}]}]}'
+    )
+    data = llm_json(prompt)
+    assert data.get("scenes"), "empty script"
+    return data
+
+
+def build_clip_vector(audio, idx, out, scene, energy, cast):
+    pad = 0.3
+    dur = max(duration(audio) + pad, 3.0)
+    vid = WORK / f"s{idx}_v.mp4"
+    env = animate.voice_env(audio, int(math.ceil(dur * FPS)) + 2)
+    cut = vp_world.render_scene(scene, dur, env, vid, idx, cast, energy=energy)
+    run([
+        "ffmpeg", "-y", "-i", str(vid), "-i", str(audio),
+        "-filter_complex", f"[1:a]apad=pad_dur={pad + 3},aresample=44100,aformat=channel_layouts=stereo[a]",
+        "-map", "0:v", "-map", "[a]", "-t", f"{dur:.3f}",
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-ar", "44100", str(out),
+    ])
+    return dur, cut
+
+
+def main_vector():
+    dry = os.getenv("DRY_RUN") == "1"
+    OUT.mkdir(exist_ok=True)
+    WORK.mkdir(exist_ok=True)
+    cast = vp_cast.build_cast()
+    if dry:
+        meta = {"title": "Test", "description": "dry run", "hashtags": ["#test"], "scenes": [
+            {"narration": "a", "backdrop": "sunrise_field", "halo": True, "actors": [{"who": "Karna", "at": "center", "action": "namaste"}]},
+            {"narration": "b", "backdrop": "palace_hall", "actors": [{"who": "Karna", "at": "left", "action": "talk"},
+                                                                     {"who": "Kunti", "at": "right", "action": "listen"}], "energy": 3},
+            {"narration": "c", "backdrop": "night_sky", "halo": True, "particles": "stars",
+             "actors": [{"who": "Brahma", "at": "center", "action": "float"}]}]}
+    else:
+        topic = pick_topic()
+        n = int(os.getenv("SCENES", "20"))
+        log(f"Topic: {topic} | scenes: {n} | mode: vector")
+        meta = write_script_vector(topic, n, list(cast))
+    (OUT / "script.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    clips, total, starts, cuts, energies = [], 0.0, [], [], []
+    for i, raw in enumerate(meta["scenes"]):
+        log(f"Scene {i + 1}/{len(meta['scenes'])}")
+        sc = vp_world.clean_scene(raw, cast)
+        aud, clip = WORK / f"s{i}.mp3", WORK / f"s{i}.mp4"
+        if dry:
+            silent_voice(aud, 3.5 + (i % 2))
+        else:
+            make_voice(raw["narration"], aud)
+            time.sleep(1)
+        energy = int(raw.get("energy", 2) or 2)
+        energies.append(energy)
+        starts.append(total)
+        dur, cut = build_clip_vector(aud, i, clip, sc, energy, cast)
+        if cut:
+            cuts.append(total + cut)
+        total += dur
+        clips.append(clip)
+
+    final = OUT / "final.mp4"
+    assemble(clips, total, final, starts, cuts, energies, overlay=False)
+    log(f"Done: {final} ({final.stat().st_size / 1e6:.1f} MB, {total:.0f}s)")
+    if not dry:
+        send_telegram(final, meta)
+
+
 def pick_topic():
     t = os.getenv("TOPIC", "").strip()
     if t:
@@ -552,6 +651,8 @@ def pick_topic():
 
 
 def main():
+    if MODE == "vector":
+        return main_vector()
     dry = os.getenv("DRY_RUN") == "1"
     OUT.mkdir(exist_ok=True)
     WORK.mkdir(exist_ok=True)
