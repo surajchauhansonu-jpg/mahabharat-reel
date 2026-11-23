@@ -42,6 +42,16 @@ CAST_SPECS = {
                   top="cloth", top_color="#d9751f", bottom_color="#d9751f", strip_color=GOLD, prop="staff"),
     "Brahma": dict(skin="#b98159", crown="cone", beard="long", beard_color="#f1eee8", brow_color="#f1eee8", heads=3,
                    top="robe_open", top_color="#e7a23a", bottom_color=WHITE, strip_color="#e8a22a", mark="tilak", mark_color=GOLD),
+    "Rishi": dict(skin="#b8825a", crown="jata", hair="#d8d8d8", beard="long", beard_color="#e2e2e2", brow_color="#e2e2e2",
+                  top="cloth", top_color="#e07a1c", bottom_color="#e07a1c", strip_color=GOLD, prop="staff"),
+    "Raja": dict(skin="#b57a4f", crown="cone", crown_color="#c9a227", beard="moustache", top="armor", top_color="#7a2030",
+                 bottom_color="#3a2a5a", strip_color=GOLD),
+    "Rani": dict(skin="#c58a5c", crown="tiara", beard="none", top="saree_top", top_color="#e0b43a", bottom="saree",
+                 bottom_color="#6a2a8a", build=0.82, height=0.94),
+    "Sainik": dict(skin="#9a6a44", crown="hair", beard="moustache", top="armor", top_color="#6a6a70", bottom_color="#7a4a2a",
+                   strip_color="#c9a24a", prop="spear"),
+    "Balak": dict(skin="#c08a5a", crown="hair", beard="none", top="cloth", top_color="#e8e0cf", bottom_color="#e8e0cf",
+                  strip_color=GOLD, build=0.75, height=0.78),
     "Surya": dict(skin="#e0a030", crown="cone", crown_color="#f3d98a", top="bare", bottom_color="#c9461f", strip_color=GOLD, mark="dot"),
 }
 
