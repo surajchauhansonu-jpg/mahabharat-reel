@@ -50,8 +50,8 @@ GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
 IMAGE_PROVIDERS = [p.strip() for p in os.getenv("IMAGE_PROVIDERS", "cloudflare,pollinations").split(",") if p.strip()]
 HF_MODEL_URL = os.getenv("HF_MODEL_URL", "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell")
 VOICE = os.getenv("TTS_VOICE", "hi-IN-MadhurNeural")
-TTS_RATE = os.getenv("TTS_RATE", "-6%")
-TTS_PITCH = os.getenv("TTS_PITCH", "-3Hz")  # thodi bhari, dramatic awaaz
+TTS_RATE = os.getenv("TTS_RATE", "-4%")
+TTS_PITCH = os.getenv("TTS_PITCH", "")  # thodi bhari, dramatic awaaz
 MODE = os.getenv("MODE", "vector")   # vector = code-drawn puppets (default) | images = AI images
 CACHE = Path("models_cache")
 CHAR_DIR = Path("characters")
@@ -378,8 +378,8 @@ async def _edge(text, path, voice, rate, pitch):
 
 
 def tts_edge(text, path):
-    tries = [(VOICE, TTS_RATE, TTS_PITCH), (VOICE, TTS_RATE, None), (VOICE, None, None),
-             ("hi-IN-SwaraNeural", None, None), (VOICE, None, None)]
+    tries = [(VOICE, TTS_RATE, TTS_PITCH or None), (VOICE, None, None), (VOICE, TTS_RATE, None), (VOICE, None, None),
+             ("hi-IN-SwaraNeural", None, None), (VOICE, None, None), (VOICE, None, None)]
     for n, (voice, rate, pitch) in enumerate(tries, 1):
         try:
             asyncio.run(_edge(text, path, voice, rate, pitch))
@@ -419,6 +419,9 @@ def tts_piper(text, path):
     wav.unlink()
 
 
+VOICE_LOG = []
+
+
 def make_voice(text, path):
     text = clean_text(text)
     fns = {"edge": tts_edge, "piper": tts_piper}
@@ -427,6 +430,7 @@ def make_voice(text, path):
         try:
             fns[name](text, path)
             log(f"  voice: {name} ok")
+            VOICE_LOG.append(name)
             return
         except Exception as e:  # noqa: BLE001
             last = e
@@ -509,14 +513,12 @@ def assemble(clips, total, out, scene_starts, cut_times, energies=None, overlay=
         inputs = ["-i", str(joined), "-i", str(bed), "-i", str(sfx)]
         bi, si = 1, 2
         fv = f"[0:v]fade=t=in:st=0:d=0.3,fade=t=out:st={total - 0.8:.2f}:d=0.8[v];"
-    fa = ("[0:a]highpass=f=75,equalizer=f=110:t=q:w=1:g=3.5,equalizer=f=260:t=q:w=1:g=-2,"
-          "equalizer=f=3200:t=q:w=1:g=3,equalizer=f=7500:t=q:w=1.5:g=1.5,"
-          "acompressor=threshold=0.08:ratio=4:attack=4:release=100:makeup=3,"
-          "aecho=0.8:0.88:70|140|230:0.22|0.14|0.08,asplit=2[vo][sc];"
-          f"[{bi}:a]volume=1.05[bed];[bed][sc]sidechaincompress=threshold=0.03:ratio=4:attack=12:release=300[duck];"
-          f"[{si}:a]volume=0.9[fx];"
+    fa = ("[0:a]highpass=f=70,equalizer=f=120:t=q:w=1:g=2,equalizer=f=3500:t=q:w=1:g=1.5,"
+          "acompressor=threshold=0.1:ratio=2.5:attack=8:release=160:makeup=2,asplit=2[vo][sc];"
+          f"[{bi}:a]volume=0.5[bed];[bed][sc]sidechaincompress=threshold=0.02:ratio=6:attack=15:release=450[duck];"
+          f"[{si}:a]volume=0.6[fx];"
           "[vo][duck][fx]amix=inputs=3:duration=first:normalize=0,alimiter=limit=0.95,"
-          f"loudnorm=I=-14:TP=-1.5:LRA=9,afade=t=out:st={total - 1.0:.2f}:d=1.0[a]")
+          f"loudnorm=I=-16:TP=-1.5:LRA=11,afade=t=out:st={total - 1.0:.2f}:d=1.0[a]")
     run(["ffmpeg", "-y", *inputs,
          "-filter_complex", fv + fa, "-map", "[v]", "-map", "[a]", "-t", f"{total:.2f}",
          "-c:v", "libx264", "-preset", "medium", "-crf", "23", "-c:a", "aac", "-b:a", "160k",
@@ -546,38 +548,78 @@ def send_telegram(video, meta):
     log("telegram:", r.status_code, r.text[:200])
     r.raise_for_status()
     narr = "\n".join(f"{i + 1}. {s['narration']}" for i, s in enumerate(meta["scenes"]))
-    tg_api("sendMessage", data={"chat_id": chat, "text": ("Script:\n" + narr)[:4000]})
+    rep = meta.get("voice_report")
+    head = (f"Voice: {rep}\n\n" if rep else "")
+    tg_api("sendMessage", data={"chat_id": chat, "text": (head + "Script:\n" + narr)[:4000]})
 
 
 # --------------------------------------------------------------------------- main
+GENERIC_ROLES = "Rishi (any sage), Raja (any king), Rani (any queen), Sainik (any soldier), Balak (any child)"
+BACKDROP_HINT = ("sunrise_field (open land, morning), night_sky (night, stars), palace_hall (court/palace), battlefield, "
+                 "forest, temple/ashram, cosmic (heaven, gods, creation), sky_clouds (sky, flight), fire (yagya, burning, "
+                 "rage), river (river, lake, water)")
+
+
 def write_script_vector(topic, n, names):
-    prompt = (
-        "You are a scriptwriter for viral Hindi short-form animated storytelling videos on Indian mythology "
-        "(Mahabharat, Ramayan, Puranas). The video is drawn as flat-vector puppet theatre, so you must direct each "
-        "scene using ONLY the allowed options below.\n"
-        f"Topic: {topic}\n"
-        f"Write exactly {n} scenes. Rules:\n"
-        "- narration: simple conversational Hindi in Devanagari, 1-2 short sentences (max 14 words), dramatic storytelling "
-        "tone, spoken by a narrator. Scene 1 = strong hook (question or shocking secret). Last scene = cliffhanger / 'Part 2'.\n"
-        "- Stay with well-known accounts from the texts, do not invent facts, respectful tone, nothing offensive to any "
-        "religion, caste or community.\n"
-        f"- actors[].who must be one of: {', '.join(names)}. Max 2 actors per scene (3 only for a group moment). "
-        "Use the character the narration is about. Gods (Krishna, Brahma, Surya) may use action 'float'.\n"
-        "- actors[].at: far_left|left|center|right|far_right. actors[].face: left|right (face toward the other actor). "
-        "actors[].action: talk|listen|idle|namaste|bow|pray|point|raise|angry|sad|shock|walk|fight|float|laugh. "
-        "Use 'talk' only when that character is speaking quoted dialogue, otherwise idle/point/angry/sad/shock etc. "
-        "actors[].prop (optional): bow|mace|sword|staff|flute|dice|spear (the prop appears in the right hand).\n"
-        "- speaker: index (0/1/2) of the actor who is speaking or is the focus of the scene.\n"
-        "- backdrop: sunrise_field|night_sky|palace_hall|battlefield|forest|temple|cosmic|sky_clouds|fire|river. "
-        "palette: sunrise|day|dusk|night|war|mystic|forest|palace (match the mood). halo: true for divine/dramatic moments "
-        "(a glowing golden mandala behind the characters). particles: dust|embers|petals|stars|none.\n"
-        "- energy: 1 calm, 2 tense, 3 action/shock. Vary backdrops, camera and actions between scenes.\n"
-        'Return ONLY JSON: {"title":"(Hindi)","description":"(Hindi, 2 lines)","hashtags":["#..."],"scenes":['
-        '{"narration":"...","backdrop":"palace_hall","palette":"palace","halo":false,"particles":"dust","energy":2,'
-        '"speaker":0,"actors":[{"who":"Karna","at":"left","face":"right","action":"idle","prop":"none"}]}]}'
+    named = ", ".join(names)
+    # ---- step 1: the real story, as ordered beats --------------------------------------------------
+    p1 = (
+        "You are an expert on the Mahabharat, Ramayan and Puranas. "
+        f"Topic of a short video: {topic}\n"
+        f"Write the story as exactly {n} ordered story beats, as told in the traditional texts, from the hook to a "
+        "cliffhanger. STRICT: only well-known events, never invent facts; if unsure of a detail leave it out. "
+        "Each beat: 'event' (one concrete sentence in English: who does what to whom), 'who' (ONLY the characters who "
+        f"are physically present in that moment, max 3; use these exact names when they fit: {named}; if the real "
+        f"character is not in the list use a generic role: {GENERIC_ROLES}), 'place' (where it happens), "
+        "'emotion' (calm/tense/shock/sad/anger/joy/awe).\n"
+        'Return ONLY JSON: {"title":"(Hindi)","description":"(Hindi, 2 lines)","hashtags":["#..."],'
+        '"beats":[{"event":"...","who":["Karna"],"place":"...","emotion":"tense"}]}'
     )
-    data = llm_json(prompt)
+    outline = llm_json(p1)
+    beats = outline.get("beats") or []
+    assert beats, "no story beats"
+
+    # ---- step 2: one scene per beat ----------------------------------------------------------------
+    p2 = (
+        "You direct a flat-vector puppet-theatre video (Hindi voice-over). Convert EVERY story beat below into exactly one "
+        "scene, in the same order, nothing added, nothing skipped.\n"
+        f"Beats: {json.dumps(beats, ensure_ascii=False)}\n"
+        "Rules:\n"
+        "- narration: simple conversational Hindi in Devanagari, 1-2 short sentences (max 14 words) that say exactly what "
+        "the beat's event is. Beat 1 = strong hook. Last = cliffhanger / 'Part 2'. Respectful, nothing offensive.\n"
+        f"- actors[].who = exactly the beat's 'who' (names from: {named}). Never add or swap in another famous character. "
+        "No actors only for pure scenery/symbolic beats.\n"
+        "- actors[].at: far_left|left|center|right|far_right; face: left|right (toward the other actor). "
+        "actors[].action: talk|listen|idle|namaste|bow|pray|point|raise|angry|sad|shock|walk|fight|float|laugh "
+        "(talk only for a speaking character; match the beat's emotion). prop (optional): bow|mace|sword|staff|flute|dice|spear.\n"
+        "- speaker: index of the actor who speaks or is the focus.\n"
+        f"- backdrop must match the beat's place: {BACKDROP_HINT}. palette: sunrise|day|dusk|night|war|mystic|forest|palace. "
+        "halo: true only for divine/dramatic moments. particles: dust|embers|petals|stars|none.\n"
+        "- energy: 1 calm, 2 tense, 3 ONLY for a real shock/battle/curse moment (use rarely).\n"
+        'Return ONLY JSON: {"scenes":[{"narration":"...","backdrop":"palace_hall","palette":"palace","halo":false,'
+        '"particles":"dust","energy":2,"speaker":0,"actors":[{"who":"Karna","at":"left","face":"right","action":"idle","prop":"none"}]}]}'
+    )
+    data = llm_json(p2)
     assert data.get("scenes"), "empty script"
+
+    # ---- step 3: check scenes against the story and fix mismatches --------------------------------
+    try:
+        p3 = (
+            "Quality check for a mythology video. Compare each scene with its story beat (same index). Fix ONLY real "
+            "mismatches: wrong or extra characters (actors must equal the beat's 'who'), wrong place/backdrop, wrong "
+            "emotion/action, narration that states a wrong or invented fact. Keep the same number of scenes and the same "
+            "JSON format. Return ONLY the full corrected JSON {\"scenes\": [...]}.\n"
+            f"Beats: {json.dumps(beats, ensure_ascii=False)}\nScenes: {json.dumps(data['scenes'], ensure_ascii=False)}"
+        )
+        fixed = llm_json(p3)
+        if fixed.get("scenes") and len(fixed["scenes"]) == len(data["scenes"]):
+            data = fixed
+            log("  script: checked and corrected")
+    except Exception as e:  # noqa: BLE001
+        log(f"  script check skipped: {str(e)[:100]}")
+    data["title"] = outline.get("title", "")
+    data["description"] = outline.get("description", "")
+    data["hashtags"] = outline.get("hashtags", [])
     return data
 
 
@@ -635,7 +677,9 @@ def main_vector():
         clips.append(clip)
 
     final = OUT / "final.mp4"
-    assemble(clips, total, final, starts, cuts, energies, overlay=False)
+    assemble(clips, total, final, starts, [], energies, overlay=False)   # no per-cut sound effects
+    if VOICE_LOG:
+        meta['voice_report'] = ', '.join(f'{k} x{VOICE_LOG.count(k)}' for k in sorted(set(VOICE_LOG))) + ('  (piper = robotic backup)' if 'piper' in VOICE_LOG else '')
     log(f"Done: {final} ({final.stat().st_size / 1e6:.1f} MB, {total:.0f}s)")
     if not dry:
         send_telegram(final, meta)
