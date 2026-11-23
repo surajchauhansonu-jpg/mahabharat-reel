@@ -334,7 +334,7 @@ def _blink(t, k):
     return 1.0 if ph < 0.12 else 0.0
 
 
-def pose_for(action, t, env, energy, k=0, speaker=True):
+def pose_for(action, t, env, energy, k=0, speaker=True, env_slow=None):
     e = {1: 0.7, 2: 1.0, 3: 1.5}.get(int(energy), 1.0)
     br = math.sin(2 * math.pi * 0.3 * t + k)
     P = dict(bob=0.35 * br, lean=0.0, head_tilt=0.8 * math.sin(2 * math.pi * 0.2 * t + k), mouth=0.0, brow=0.0,
@@ -342,13 +342,14 @@ def pose_for(action, t, env, energy, k=0, speaker=True):
              foot_l=0.0, foot_r=0.0, sway=1.0 * math.sin(2 * math.pi * 0.5 * t + k), hover=0.0, dx=0.0,
              prop_rot=0.0, t=t)
     ev = env if speaker else 0.0
+    es = (env_slow if env_slow is not None else env) if speaker else 0.0   # slow envelope for gestures (no jitter)
     g = 0.5 + 0.5 * math.sin(2 * math.pi * 0.85 * t + k * 1.3)
     if action == "talk":
         P["mouth"] = min(1.0, ev ** 0.8 * 1.1)
-        P["arm_r"] = (14 + 42 * g * ev * e, 22 + 60 * g * ev * e)
-        P["arm_l"] = (8 + 10 * ev, 12 + 18 * ev * (1 - g))
-        P["head_tilt"] += 2.4 * math.sin(2 * math.pi * 1.5 * t) * ev * e
-        P["bob"] += 0.6 * ev
+        P["arm_r"] = (14 + 30 * g * es * e, 22 + 40 * g * es * e)
+        P["arm_l"] = (8 + 6 * es, 12 + 10 * es * (1 - g))
+        P["head_tilt"] += 1.4 * math.sin(2 * math.pi * 0.6 * t) * es * e
+        P["bob"] += 0.3 * es
         P["look"] = (0.2 * math.sin(t * 0.7), 0.0)
     elif action == "listen":
         P["head_tilt"] += 2.2 * math.sin(2 * math.pi * 0.55 * t + k)
@@ -381,10 +382,10 @@ def pose_for(action, t, env, energy, k=0, speaker=True):
         P["brow"] = 0.95
         P["arm_l"] = (22, 74)
         P["arm_r"] = (24, 78)
-        P["lean"] = 4 + 2.5 * math.sin(2 * math.pi * 3 * t) * ev * e
-        P["head_tilt"] = 3.5 * math.sin(2 * math.pi * 2.6 * t) * ev * e
+        P["lean"] = 4 + 1.5 * math.sin(2 * math.pi * 0.9 * t) * es * e
+        P["head_tilt"] = 2.0 * math.sin(2 * math.pi * 0.8 * t) * es * e
         P["mouth"] = min(1.0, ev ** 0.8 * 1.1)
-        P["bob"] += 0.5 * math.sin(2 * math.pi * 3 * t) * ev
+        P["bob"] += 0.25 * math.sin(2 * math.pi * 0.9 * t) * es
     elif action == "sad":
         P["head_tilt"] = -8.0
         P["lean"] = 3.0
@@ -400,7 +401,7 @@ def pose_for(action, t, env, energy, k=0, speaker=True):
         P["arm_r"] = (42.0, 26.0)
         P["mouth"] = 0.95 if env < 0.2 else min(1.0, 0.5 + ev)
         P["brow"] = -0.7
-        P["head_tilt"] = 1.2 * math.sin(2 * math.pi * 9 * t)
+        P["head_tilt"] = 1.5 * math.sin(2 * math.pi * 8 * t) * math.exp(-t / 0.25)
         P["lean"] = -4.0
     elif action == "walk":
         s = math.sin(2 * math.pi * 1.35 * t)
@@ -424,9 +425,9 @@ def pose_for(action, t, env, energy, k=0, speaker=True):
         P["arm_r"] = (34 - 3 * br, 22.0)
         P["mouth"] = min(1.0, ev ** 0.8)
     elif action == "laugh":
-        P["mouth"] = 0.5 + 0.5 * abs(math.sin(2 * math.pi * 4.5 * t))
-        P["lean"] = -4 + 2 * math.sin(2 * math.pi * 4.5 * t)
-        P["bob"] += 0.7 * abs(math.sin(2 * math.pi * 4.5 * t))
+        P["mouth"] = 0.5 + 0.5 * abs(math.sin(2 * math.pi * 3.0 * t))
+        P["lean"] = -4 + 1.0 * math.sin(2 * math.pi * 1.5 * t)
+        P["bob"] += 0.35 * abs(math.sin(2 * math.pi * 1.5 * t))
         P["arm_l"] = (10, 40)
     else:   # idle
         pass
@@ -504,10 +505,14 @@ def render_scene(scene, dur, env, out_path, idx, cast, energy=2):
         ["ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "bgra", "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-",
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-pix_fmt", "yuv420p", str(out_path)],
         stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    shake = {1: 0.5, 2: 1.0, 3: 2.2}.get(int(energy), 1.0)
+    es_arr, _v = [], 0.0
+    for _x in (list(env) if env is not None and len(env) else [0.0]):
+        _v += (float(_x) - _v) * 0.06
+        es_arr.append(_v)
     for f in range(n):
         t = f / FPS
         ev = float(env[min(f, len(env) - 1)]) if env is not None and len(env) else 0.0
+        es = es_arr[min(f, len(es_arr) - 1)]
         sh = shots[-1]
         for cand in shots:
             if t < cand[1]:
@@ -515,9 +520,12 @@ def render_scene(scene, dur, env, out_path, idx, cast, energy=2):
                 break
         pr = (t - sh[0]) / max(sh[1] - sh[0], 1e-3)
         cx, cy, z = cam_at(sh[2], pr, fx_main, focus_y, energy)
-        z *= 1 + 0.07 * math.exp(-(t - sh[0]) / 0.14) + 0.006 * ev * energy       # punch at every shot start + voice pulse
-        cx += shake * (1.3 * math.sin(2 * math.pi * 1.1 * t) + 0.6 * math.sin(2 * math.pi * 2.7 * t + 1))
-        cy += shake * (1.0 * math.sin(2 * math.pi * 0.9 * t + 2) + 0.5 * math.sin(2 * math.pi * 3.1 * t))
+        big = int(energy) >= 3 and sh[3] == 0                       # only shock scenes get an impact
+        if big:
+            z *= 1 + 0.06 * math.exp(-t / 0.18)
+            kick = math.exp(-t / 0.45)
+            cx += 7 * kick * math.sin(2 * math.pi * 9 * t)
+            cy += 5 * kick * math.sin(2 * math.pi * 11 * t + 1)
 
         cv.save()
         cv.translate(W / 2, H / 2)
@@ -539,7 +547,7 @@ def render_scene(scene, dur, env, out_path, idx, cast, energy=2):
             action = it["action"]
             if len(items) > 1 and it["i"] != speaker and action == "talk":
                 action = "listen"
-            pose = pose_for(action, t, ev, energy, k=it["i"], speaker=(it["i"] == speaker))
+            pose = pose_for(action, t, ev, energy, k=it["i"], speaker=(it["i"] == speaker), env_slow=es)
             if it["prop"]:
                 it["pup"].s["prop"] = it["prop"]
             it["pup"].draw(cv, x, GY + (1 - pop) * 36, base_scale * (0.9 + 0.1 * pop) * over, pose, t=t, flip=it["flip"])
@@ -550,7 +558,7 @@ def render_scene(scene, dur, env, out_path, idx, cast, energy=2):
         # screen-space: vignette + flash on shot starts
         cv.drawRect(skia.Rect.MakeLTRB(0, 0, W, H), skia.Paint(Shader=skia.GradientShader.MakeRadial(
             (W / 2, H * 0.5), H * 0.78, [C("#000000", 0), C("#000000", 120)], [0.55, 1.0])))
-        for cand in shots:
+        for cand in (shots[:1] if int(energy) >= 3 else []):
             lt = t - cand[0]
             if 0 <= lt < 0.10:
                 cv.drawRect(skia.Rect.MakeLTRB(0, 0, W, H), fill("#fff4d6", 110 * (1 - lt / 0.10)))
