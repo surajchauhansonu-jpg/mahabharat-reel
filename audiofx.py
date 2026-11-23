@@ -87,15 +87,14 @@ def make_sfx(total, scene_starts, cut_times, out_path, energies=None):
     hit = _boom(2.2, 150, 32, 1.0)
     for k, t in enumerate(scene_starts):
         en = (energies[k] if energies and k < len(energies) else 2)
-        if en >= 3 and t > 1.6:
-            _place(buf, ris, t - 1.6, 0.55)           # tension riser into the shock scene
         if k == 0:
-            _place(buf, hit, 0.0, 0.9)                # opening hit
-        _place(buf, wh, max(0.0, t - 0.28), 0.55, pan=0.2 if k % 2 else -0.2)  # whoosh leads into the cut
-        _place(buf, boom_big if k % 3 == 0 else boom_small, t, 0.8 if k % 3 == 0 else 0.5)
-    for t in cut_times:
-        _place(buf, boom_small, t, 0.5)
-        _place(buf, wh, max(0.0, t - 0.2), 0.35)
+            _place(buf, hit, 0.0, 0.45)                       # soft opening hit
+        if en >= 3:                                           # sound effects ONLY for shock / action scenes
+            if t > 1.6:
+                _place(buf, ris, t - 1.6, 0.40)
+            _place(buf, boom_big, t, 0.70)
+        elif en == 2 and k > 0 and energies and energies[k - 1] == 1:
+            _place(buf, wh, max(0.0, t - 0.3), 0.22)          # calm -> tense: one soft whoosh
     _write_wav(out_path, buf[: int(total * SR)] * 0.9)
 
 
@@ -157,10 +156,10 @@ def make_music(total, out_path, scene_starts=None, energies=None, seed=7):
     while k * beat / 2 < total:
         tt = k * beat / 2
         if tt > 8:
-            _place(perc, tick, tt, 0.18 if k % 2 == 0 else 0.1, pan=0.3 if k % 2 else -0.3)
+            _place(perc, tick, tt, 0.07 if k % 2 == 0 else 0.04, pan=0.3 if k % 2 else -0.3)
         k += 1
-    L += perc[:n, 0] * (0.45 + 0.75 * inten)
-    R += perc[:n, 1] * (0.45 + 0.75 * inten)
+    L += perc[:n, 0] * (0.18 + 0.32 * inten)
+    R += perc[:n, 1] * (0.18 + 0.32 * inten)
 
     # --- temple-bell notes
     notes = [587.33, 622.25, 698.46, 880.0, 932.33]
