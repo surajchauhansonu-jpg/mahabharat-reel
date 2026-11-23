@@ -1,0 +1,8 @@
+requests
+edge-tts
+pillow
+numpy
+opencv-python-headless
+onnxruntime
+piper-tts
+skia-python
